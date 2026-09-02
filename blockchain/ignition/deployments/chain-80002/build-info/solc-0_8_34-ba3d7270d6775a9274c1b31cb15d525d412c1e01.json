@@ -1,0 +1,49 @@
+{
+  "_format": "hh3-sol-build-info-1",
+  "id": "solc-0_8_34-ba3d7270d6775a9274c1b31cb15d525d412c1e01",
+  "solcVersion": "0.8.34",
+  "solcLongVersion": "0.8.34+commit.80d5c536",
+  "compilerType": "solc",
+  "toolVersions": {
+    "hardhat": "3.15.0"
+  },
+  "userSourceNameMap": {
+    "contracts/AuditLog.sol": "project/contracts/AuditLog.sol"
+  },
+  "input": {
+    "language": "Solidity",
+    "settings": {
+      "evmVersion": "osaka",
+      "optimizer": {
+        "enabled": true,
+        "runs": 200
+      },
+      "outputSelection": {
+        "*": {
+          "": [
+            "ast"
+          ],
+          "*": [
+            "abi",
+            "evm.bytecode.linkReferences",
+            "evm.bytecode.object",
+            "evm.bytecode.opcodes",
+            "evm.bytecode.sourceMap",
+            "evm.deployedBytecode.immutableReferences",
+            "evm.deployedBytecode.linkReferences",
+            "evm.deployedBytecode.object",
+            "evm.deployedBytecode.opcodes",
+            "evm.deployedBytecode.sourceMap",
+            "evm.methodIdentifiers"
+          ]
+        }
+      },
+      "remappings": []
+    },
+    "sources": {
+      "project/contracts/AuditLog.sol": {
+        "content": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\ncontract AuditLog {\n  error RecordNotFound();\n\n  enum Decision {\n    Approved,\n    Denied,\n    Escalated\n  }\n\n  struct AuditRecord {\n    bytes32 decisionHash;\n    Decision decision;\n    uint256 timestamp;\n    address submittedBy;\n  }\n\n  mapping(uint256 => AuditRecord) private recordsById;\n  mapping(bytes32 => uint256) private recordIdByHash;\n  uint256 private nextRecordId = 1;\n\n  event DecisionLogged(\n    uint256 indexed recordId,\n    bytes32 indexed decisionHash,\n    Decision decision,\n    uint256 timestamp,\n    address submittedBy\n  );\n\n  function logDecision(bytes32 decisionHash, Decision decision) external returns (uint256 recordId) {\n    recordId = nextRecordId++;\n    AuditRecord memory record = AuditRecord({\n      decisionHash: decisionHash,\n      decision: decision,\n      timestamp: block.timestamp,\n      submittedBy: msg.sender\n    });\n\n    recordsById[recordId] = record;\n    recordIdByHash[decisionHash] = recordId;\n\n    emit DecisionLogged(recordId, decisionHash, decision, record.timestamp, record.submittedBy);\n  }\n\n  function getRecordByHash(bytes32 decisionHash) external view returns (AuditRecord memory) {\n    uint256 recordId = recordIdByHash[decisionHash];\n    if (recordId == 0) revert RecordNotFound();\n    return recordsById[recordId];\n  }\n\n  function getRecordById(uint256 recordId) external view returns (AuditRecord memory) {\n    if (recordId == 0 || recordId >= nextRecordId) revert RecordNotFound();\n    return recordsById[recordId];\n  }\n}"
+      }
+    }
+  }
+}
