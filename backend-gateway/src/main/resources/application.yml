@@ -1,0 +1,12 @@
+spring:
+  application:
+    name: backend-gateway
+
+server:
+  port: 8080
+
+aegispay:
+  blockchain:
+    rpc-url: ${AMOY_RPC_URL:https://rpc-amoy.polygon.technology}
+    contract-address: "0x69cE88e0a8e97c2055B0395A8E4CD56a5D4ef614"
+    private-key: ${AMOY_PRIVATE_KEY}

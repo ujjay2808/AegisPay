@@ -1,0 +1,13 @@
+services:
+  backend-gateway:
+    build:
+      context: ./backend-gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    env_file:
+      - ./backend-gateway/.env
+    environment:
+      AEGISPAY_KEYSTORE_PATH: /root/.aegispay/keystores/UTC--2026-09-02T19-01-47.417917000Z--2bf7ebf70f30526db80abb2ec2d4c791c38e2481.json
+    volumes:
+      - ~/.aegispay/keystores:/root/.aegispay/keystores:ro
