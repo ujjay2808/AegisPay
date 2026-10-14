@@ -26,5 +26,6 @@ class Payment(Base):
     decision: Mapped[str] = mapped_column(String(32), nullable=False)
     reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
+    audit_tx_hash: Mapped[str | None] = mapped_column(String(130), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     cart = relationship("Cart", back_populates="payments")

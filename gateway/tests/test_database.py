@@ -55,7 +55,7 @@ def test_sqlalchemy_repository_persists_relationships_and_idempotency() -> None:
 
         repository.save_intent(intent, IntentStatus.ACTIVE)
         repository.save_cart(cart, CartStatus.READY_FOR_PAYMENT)
-        repository.save_payment(transaction, PaymentStatus.APPROVED, decision)
+        repository.save_payment(transaction, PaymentStatus.APPROVED, decision, audit_tx_hash="0xabc123")
         repository.update_cart_status(cart.cart_id, CartStatus.PAYMENT_PENDING)
 
         stored_intent = repository.get_intent(intent.intent_id)
@@ -69,6 +69,7 @@ def test_sqlalchemy_repository_persists_relationships_and_idempotency() -> None:
         assert stored_cart.status == CartStatus.PAYMENT_PENDING
         assert stored_payment is not None
         assert stored_payment.decision.reason_code == "WITHIN_SPEND_LIMIT"
+        assert stored_payment.audit_tx_hash == "0xabc123"
 
         assert session.scalar(select(Intent).where(Intent.intent_id == intent.intent_id)) is not None
         assert session.scalar(select(CartItem).where(CartItem.cart_id == cart.cart_id)) is not None

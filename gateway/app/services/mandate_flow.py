@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -10,6 +11,8 @@ from app.schemas.state import CartStatus, IntentStatus, PaymentStatus
 from app.services.audit_client import AuditClient
 from app.services.normalization import NormalizationService
 from app.services.policy_engine import PolicyEngine
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -65,7 +68,7 @@ class MandateFlowService:
                     "Idempotency key is already associated with another cart",
                     409,
                 )
-            return existing_payment.transaction, existing_payment.status, existing_payment.decision
+            return (existing_payment.transaction, existing_payment.status, existing_payment.decision, existing_payment.audit_tx_hash)
 
         stored_cart = self._repository.get_cart(request.cart_id)
         if stored_cart is None:
@@ -89,8 +92,23 @@ class MandateFlowService:
 
         decision = self._policy_engine.evaluate(transaction, stored_intent.intent)
         payment_status = PaymentStatus(decision.decision.value)
-        self._repository.save_payment(transaction, payment_status, decision)
+        self._repository.save_payment(transaction, payment_status, decision, audit_tx_hash=None)
         self._repository.update_cart_status(request.cart_id, CartStatus.PAYMENT_PENDING)
+
+        audit_tx_hash = None
         if self._audit_client is not None:
-            self._audit_client.record_decision(transaction, decision)
-        return transaction, payment_status, decision
+            audit_tx_hash = self._audit_client.record_decision(transaction, decision)
+            if isinstance(audit_tx_hash, str):
+                try:
+                    self._repository.update_payment_audit_tx_hash(transaction.transaction_id, audit_tx_hash)
+                except Exception as exc:
+                    logger.warning(
+                        "Audit tx hash persistence failed for transaction %s: %s",
+                        transaction.transaction_id,
+                        type(exc).__name__,
+                    )
+                    session = getattr(self._repository, "_session", None)
+                    if session is not None and hasattr(session, "rollback"):
+                        session.rollback()
+
+        return transaction, payment_status, decision, audit_tx_hash

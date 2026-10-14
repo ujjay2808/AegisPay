@@ -59,7 +59,7 @@ def create_payment(
     request: PaymentCreateRequest,
     flow: Annotated[MandateFlowService, Depends(get_mandate_flow)],
 ) -> PaymentCreateResponse:
-    transaction, payment_status, decision = flow.create_payment(request)
+    transaction, payment_status, decision, audit_tx_hash = flow.create_payment(request)
     return PaymentCreateResponse(
         payment_id=transaction.transaction_id,
         cart_id=transaction.cart_id,
@@ -67,4 +67,5 @@ def create_payment(
         status=payment_status,
         reason_code=decision.reason_code,
         reason=decision.reason,
+        audit_tx_hash=audit_tx_hash,
     )

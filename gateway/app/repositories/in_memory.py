@@ -22,6 +22,7 @@ class StoredPaymentRecord:
     transaction: CanonicalTransaction
     status: PaymentStatus
     decision: PolicyDecision
+    audit_tx_hash: str | None = None
 
 
 class InMemoryGatewayRepository:
@@ -51,12 +52,33 @@ class InMemoryGatewayRepository:
         transaction: CanonicalTransaction,
         status: PaymentStatus,
         decision: PolicyDecision,
+        audit_tx_hash: str | None = None,
     ) -> None:
         self._payments_by_idempotency[transaction.idempotency_key] = StoredPaymentRecord(
             transaction,
             status,
             decision,
+            audit_tx_hash,
         )
 
+    def update_payment_audit_tx_hash(self, payment_id: str, audit_tx_hash: str | None) -> None:
+        for idempotency_key, record in list(self._payments_by_idempotency.items()):
+            if record.transaction.transaction_id == payment_id:
+                self._payments_by_idempotency[idempotency_key] = StoredPaymentRecord(
+                    record.transaction,
+                    record.status,
+                    record.decision,
+                    audit_tx_hash,
+                )
+                return
+
     def get_payment_by_idempotency_key(self, idempotency_key: str) -> StoredPaymentRecord | None:
-        return self._payments_by_idempotency.get(idempotency_key)
+        record = self._payments_by_idempotency.get(idempotency_key)
+        if record is None:
+            return None
+        return StoredPaymentRecord(
+            transaction=record.transaction,
+            status=record.status,
+            decision=record.decision,
+            audit_tx_hash=record.audit_tx_hash,
+        )

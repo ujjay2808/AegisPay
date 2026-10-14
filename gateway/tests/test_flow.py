@@ -1,10 +1,116 @@
-from fastapi.testclient import TestClient
 from uuid import uuid4
 
+import pytest
+from fastapi.testclient import TestClient
+
+from app.core.config import settings
 from app.main import app
+from app.repositories.in_memory import InMemoryGatewayRepository
+from app.schemas.cart import CartCreateRequest
+from app.schemas.intent import IntentCreateRequest
+from app.schemas.payment import PaymentCreateRequest
+from app.services.mandate_flow import MandateFlowService
+from app.services.normalization import get_ap2_normalization_service
+from app.services.policy_engine import get_policy_engine
+
+
+@pytest.fixture(autouse=True)
+def clear_dependency_overrides():
+    app.dependency_overrides.clear()
+    yield
+    app.dependency_overrides.clear()
 
 
 client = TestClient(app)
+
+
+class FakeAuditClient:
+    def __init__(self, value):
+        self.value = value
+        self.calls = 0
+
+    def record_decision(self, transaction, decision):
+        self.calls += 1
+        return self.value
+
+
+class RaisesOnUpdateAuditTxHash:
+    def __init__(self):
+        self.calls = 0
+
+    def record_decision(self, transaction, decision):
+        self.calls += 1
+        return "0xabc"
+
+
+def _build_service(audit_client=None) -> MandateFlowService:
+    repository = InMemoryGatewayRepository()
+    return MandateFlowService(
+        repository=repository,
+        normalization=get_ap2_normalization_service(),
+        policy_engine=get_policy_engine(settings),
+        audit_client=audit_client,
+    )
+
+
+def _build_cart_request(
+    intent_id: str,
+    *,
+    merchant_id: str = "merchant-service",
+    merchant_name: str = "Service Merchant",
+    product_id: str = "product-service",
+    product_name: str = "Notebook",
+    quantity: int = 2,
+    unit_price: str = "125.50",
+    currency: str = "INR",
+) -> CartCreateRequest:
+    return CartCreateRequest(
+        intent_id=intent_id,
+        merchant_id=merchant_id,
+        merchant_name=merchant_name,
+        items=[
+            {
+                "product_id": product_id,
+                "name": product_name,
+                "quantity": quantity,
+                "unit_price": unit_price,
+            }
+        ],
+        currency=currency,
+    )
+
+
+def _build_payment_request(cart_id: str, idempotency_key: str) -> PaymentCreateRequest:
+    return PaymentCreateRequest(
+        cart_id=cart_id,
+        payment_method="SIMULATED_CARD",
+        idempotency_key=idempotency_key,
+    )
+
+
+def _create_cart_and_return_service(audit_client=None):
+    service = _build_service(audit_client=audit_client)
+    intent = service.create_intent(
+        IntentCreateRequest(
+            agent_id="agent-service",
+            user_id="user-service",
+            purpose="Purchase office supplies",
+            spending_constraints={"max_amount": "5000", "currency": "INR"},
+        ))[0]
+    cart = service.create_cart(_build_cart_request(intent.intent_id))[0]
+    return service, cart.cart_id
+
+
+class FailOnPersistRepository:
+    def __init__(self, inner):
+        self._inner = inner
+        self._session = type("Session", (), {"rollback": lambda self: None})()
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def update_payment_audit_tx_hash(self, payment_id, audit_tx_hash):
+        raise RuntimeError("persist failed")
 
 
 def create_intent() -> str:
@@ -100,6 +206,86 @@ def test_payment_flow_and_idempotency() -> None:
     assert first_response.json()["decision"] == "APPROVED"
     assert first_response.json()["status"] == "APPROVED"
     assert first_response.json()["reason_code"] == "WITHIN_SPEND_LIMIT"
+
+
+def test_payment_persists_audit_hash_when_audit_returns_hex() -> None:
+    service, cart_id = _create_cart_and_return_service(audit_client=FakeAuditClient("0xabc"))
+    request = _build_payment_request(cart_id, f"audit-hash-{uuid4()}")
+
+    _, _, _, audit_tx_hash = service.create_payment(request)
+
+    assert audit_tx_hash == "0xabc"
+    stored_payment = service._repository.get_payment_by_idempotency_key(request.idempotency_key)
+    assert stored_payment is not None
+    assert stored_payment.audit_tx_hash == "0xabc"
+
+
+def test_payment_replay_returns_same_hash_and_calls_audit_once() -> None:
+    fake_client = FakeAuditClient("0xabc")
+    service, cart_id = _create_cart_and_return_service(audit_client=fake_client)
+    request = _build_payment_request(cart_id, f"replay-hash-{uuid4()}")
+
+    first = service.create_payment(request)
+    second = service.create_payment(request)
+
+    assert first == second
+    assert first[3] == "0xabc"
+    assert fake_client.calls == 1
+
+
+def test_payment_saves_when_audit_client_returns_none() -> None:
+    service, cart_id = _create_cart_and_return_service(audit_client=FakeAuditClient(None))
+    request = _build_payment_request(cart_id, f"audit-none-{uuid4()}")
+
+    _, _, _, audit_tx_hash = service.create_payment(request)
+
+    assert audit_tx_hash is None
+    stored_payment = service._repository.get_payment_by_idempotency_key(request.idempotency_key)
+    assert stored_payment is not None
+    assert stored_payment.audit_tx_hash is None
+
+
+def test_payment_without_audit_client_has_null_audit_hash() -> None:
+    service, cart_id = _create_cart_and_return_service(audit_client=None)
+    request = _build_payment_request(cart_id, f"audit-disabled-{uuid4()}")
+
+    _, _, _, audit_tx_hash = service.create_payment(request)
+
+    assert audit_tx_hash is None
+    stored_payment = service._repository.get_payment_by_idempotency_key(request.idempotency_key)
+    assert stored_payment is not None
+    assert stored_payment.audit_tx_hash is None
+
+
+def test_payment_returns_audit_hash_even_when_persistence_fails() -> None:
+    service = _build_service(audit_client=FakeAuditClient("0xabc"))
+    intent = service.create_intent(
+        IntentCreateRequest(
+            agent_id="agent-rollback",
+            user_id="user-rollback",
+            purpose="Purchase office supplies",
+            spending_constraints={"max_amount": "5000", "currency": "INR"},
+        ))[0]
+    cart = service.create_cart(
+        _build_cart_request(
+            intent.intent_id,
+            merchant_id="merchant-rollback",
+            merchant_name="Rollback Merchant",
+            product_id="product-rollback",
+            product_name="Notebook",
+            quantity=1,
+            unit_price="10.00",
+        )
+    )[0]
+    key = f"audit-persist-fail-{uuid4()}"
+    service._repository = FailOnPersistRepository(service._repository)
+
+    _, _, _, audit_tx_hash = service.create_payment(_build_payment_request(cart.cart_id, key))
+
+    assert audit_tx_hash == "0xabc"
+    stored_payment = service._repository.get_payment_by_idempotency_key(key)
+    assert stored_payment is not None
+    assert stored_payment.audit_tx_hash is None
 
 
 def test_payment_rejects_second_operation_for_same_cart() -> None:
