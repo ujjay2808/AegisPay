@@ -39,7 +39,6 @@ public class Web3jConfig {
     @Bean
     public Credentials credentials() {
         log.info("Keystore path resolved to: {}", keystorePath);
-        log.info("Keystore password length resolved to: {}", keystorePassword.length());
 
         try {
             Credentials credentials = WalletUtils.loadCredentials(keystorePassword, keystorePath);
