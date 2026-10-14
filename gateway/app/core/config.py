@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://aegispay:aegispay@localhost:5432/aegispay"
     spend_cap_amount: Decimal = Decimal("5000.00")
     spend_cap_currency: str = "INR"
+    audit_enabled: bool = False
+    audit_service_url: str = "http://localhost:8080"
+    audit_timeout_seconds: float = 30.0
 
     model_config = SettingsConfigDict(
         env_file=".env",

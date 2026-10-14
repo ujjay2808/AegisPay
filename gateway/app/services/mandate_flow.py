@@ -7,6 +7,7 @@ from app.schemas.intent import IntentCreateRequest
 from app.schemas.payment import PaymentCreateRequest
 from app.schemas.policy import PolicyDecision
 from app.schemas.state import CartStatus, IntentStatus, PaymentStatus
+from app.services.audit_client import AuditClient
 from app.services.normalization import NormalizationService
 from app.services.policy_engine import PolicyEngine
 
@@ -24,10 +25,12 @@ class MandateFlowService:
         repository: GatewayRepository,
         normalization: NormalizationService,
         policy_engine: PolicyEngine,
+        audit_client: AuditClient | None = None,
     ) -> None:
         self._repository = repository
         self._normalization = normalization
         self._policy_engine = policy_engine
+        self._audit_client = audit_client
 
     def create_intent(self, request: IntentCreateRequest):
         intent = self._normalization.normalize_intent(request, intent_id=str(uuid4()))
@@ -88,4 +91,6 @@ class MandateFlowService:
         payment_status = PaymentStatus(decision.decision.value)
         self._repository.save_payment(transaction, payment_status, decision)
         self._repository.update_cart_status(request.cart_id, CartStatus.PAYMENT_PENDING)
+        if self._audit_client is not None:
+            self._audit_client.record_decision(transaction, decision)
         return transaction, payment_status, decision
