@@ -9,16 +9,19 @@ from app.repositories.in_memory import InMemoryGatewayRepository
 from app.schemas.cart import CartCreateRequest
 from app.schemas.intent import IntentCreateRequest
 from app.schemas.payment import PaymentCreateRequest
+from app.schemas.state import PaymentStatus
 from app.services.mandate_flow import MandateFlowService
 from app.services.normalization import get_ap2_normalization_service
 from app.services.policy_engine import get_policy_engine
 
 
 @pytest.fixture(autouse=True)
-def clear_dependency_overrides():
+def clear_dependency_overrides(monkeypatch):
     app.dependency_overrides.clear()
+    monkeypatch.setattr(settings, "audit_enabled", False, raising=False)
     yield
     app.dependency_overrides.clear()
+    monkeypatch.setattr(settings, "audit_enabled", False, raising=False)
 
 
 client = TestClient(app)
@@ -286,6 +289,44 @@ def test_payment_returns_audit_hash_even_when_persistence_fails() -> None:
     stored_payment = service._repository.get_payment_by_idempotency_key(key)
     assert stored_payment is not None
     assert stored_payment.audit_tx_hash is None
+
+
+def test_payment_to_blocked_merchant_is_denied_and_logged(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "blocked_merchant_ids", "blocked-merchant", raising=False)
+    fake_client = FakeAuditClient("0xabc")
+    service = _build_service(audit_client=fake_client)
+    intent = service.create_intent(
+        IntentCreateRequest(
+            agent_id="agent-blocked",
+            user_id="user-blocked",
+            purpose="Purchase office supplies",
+            spending_constraints={"max_amount": "5000", "currency": "INR"},
+        ))[0]
+    cart = service.create_cart(
+        _build_cart_request(
+            intent.intent_id,
+            merchant_id="blocked-merchant",
+            merchant_name="Blocked Merchant",
+            product_id="product-blocked",
+            product_name="Notebook",
+            quantity=1,
+            unit_price="10.00",
+        )
+    )[0]
+    request = _build_payment_request(cart.cart_id, f"blocked-{uuid4()}")
+
+    transaction, status, decision, audit_tx_hash = service.create_payment(request)
+
+    assert status == PaymentStatus.DENIED
+    assert decision.decision.value == "DENIED"
+    assert decision.reason_code == "MERCHANT_BLOCKED"
+    assert audit_tx_hash == "0xabc"
+    assert fake_client.calls == 1
+    stored_payment = service._repository.get_payment_by_idempotency_key(request.idempotency_key)
+    assert stored_payment is not None
+    assert stored_payment.status == PaymentStatus.DENIED
+    assert stored_payment.decision.reason_code == "MERCHANT_BLOCKED"
+    assert transaction.merchant_id == "blocked-merchant"
 
 
 def test_payment_rejects_second_operation_for_same_cart() -> None:

@@ -74,3 +74,57 @@ def test_sqlalchemy_repository_persists_relationships_and_idempotency() -> None:
         assert session.scalar(select(Intent).where(Intent.intent_id == intent.intent_id)) is not None
         assert session.scalar(select(CartItem).where(CartItem.cart_id == cart.cart_id)) is not None
         assert session.scalar(select(Payment).where(Payment.idempotency_key == "db-key-1")) is not None
+
+
+def test_sqlalchemy_repository_persists_denied_status() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        repository = SQLAlchemyGatewayRepository(session)
+        intent = CanonicalIntent(
+            intent_id="intent-db-denied",
+            agent_id="agent-db-denied",
+            user_id="user-db-denied",
+            purpose="Denied database test",
+            spending_constraints={"max_amount": "5000", "currency": "INR"},
+        )
+        cart = CanonicalCart(
+            cart_id="cart-db-denied",
+            intent_id=intent.intent_id,
+            merchant_id="blocked-merchant",
+            merchant_name="Blocked Merchant",
+            items=[CanonicalLineItem(product_id="product-db-denied", name="Denied Item", quantity=1, unit_price="10.00", line_total="10.00")],
+            total="10.00",
+            currency="INR",
+        )
+        transaction = CanonicalTransaction(
+            transaction_id="payment-db-denied",
+            intent_id=intent.intent_id,
+            cart_id=cart.cart_id,
+            agent_id=intent.agent_id,
+            user_id=intent.user_id,
+            merchant_id=cart.merchant_id,
+            merchant_name=cart.merchant_name,
+            amount=cart.total,
+            currency=cart.currency,
+            payment_method=SimulatedPaymentMethod.SIMULATED_CARD,
+            idempotency_key="db-key-denied",
+        )
+        decision = PolicyDecision(
+            decision=PolicyDecisionType.DENIED,
+            reason_code="MERCHANT_BLOCKED",
+            reason="Merchant blocked-merchant is blocked from processing",
+        )
+
+        repository.save_intent(intent, IntentStatus.ACTIVE)
+        repository.save_cart(cart, CartStatus.READY_FOR_PAYMENT)
+        repository.save_payment(transaction, PaymentStatus.DENIED, decision, audit_tx_hash="0xdenied")
+
+        stored_payment = repository.get_payment_by_idempotency_key("db-key-denied")
+
+        assert stored_payment is not None
+        assert stored_payment.status == PaymentStatus.DENIED
+        assert stored_payment.decision.decision == PolicyDecisionType.DENIED
+        assert stored_payment.decision.reason_code == "MERCHANT_BLOCKED"
+        assert stored_payment.audit_tx_hash == "0xdenied"
