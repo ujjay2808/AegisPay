@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     audit_enabled: bool = False
     audit_service_url: str = "http://localhost:8080"
     audit_timeout_seconds: float = 30.0
+    audit_api_key: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",

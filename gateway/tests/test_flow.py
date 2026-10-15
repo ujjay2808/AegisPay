@@ -1,15 +1,20 @@
+from decimal import Decimal
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.main import app
 from app.repositories.in_memory import InMemoryGatewayRepository
+from app.schemas.canonical import CanonicalTransaction
 from app.schemas.cart import CartCreateRequest
 from app.schemas.intent import IntentCreateRequest
 from app.schemas.payment import PaymentCreateRequest
+from app.schemas.policy import PolicyDecision, PolicyDecisionType
 from app.schemas.state import PaymentStatus
+from app.services.audit_client import AuditClient
 from app.services.mandate_flow import MandateFlowService
 from app.services.normalization import get_ap2_normalization_service
 from app.services.policy_engine import get_policy_engine
@@ -190,6 +195,80 @@ def test_cart_rejects_unknown_intent() -> None:
 
     assert response.status_code == 404
     assert response.json() == {"code": "INTENT_NOT_FOUND", "message": "Intent was not found"}
+
+
+def test_audit_client_sends_api_key_header_when_configured() -> None:
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(200, json={"txHash": "0xabc"})
+
+    client = AuditClient(
+        audit_service_url="http://localhost:8080",
+        timeout_seconds=1.0,
+        transport=httpx.MockTransport(handler),
+        api_key="test-key",
+    )
+
+    tx = CanonicalTransaction(
+        transaction_id="txn-header-present",
+        intent_id="intent-header-present",
+        cart_id="cart-header-present",
+        agent_id="agent-header-present",
+        user_id="user-header-present",
+        merchant_id="merchant-header-present",
+        merchant_name="Header Merchant",
+        amount=Decimal("251.00"),
+        currency="INR",
+        payment_method="SIMULATED_CARD",
+        idempotency_key="idem-header-present",
+    )
+    decision = PolicyDecision(
+        decision=PolicyDecisionType.APPROVED,
+        reason_code="WITHIN_SPEND_LIMIT",
+        reason="Approved for test",
+    )
+
+    assert client.record_decision(tx, decision) == "0xabc"
+    assert captured["headers"].get("x-api-key") == "test-key"
+
+
+def test_audit_client_omits_api_key_header_when_unset() -> None:
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(200, json={"txHash": "0xdef"})
+
+    client = AuditClient(
+        audit_service_url="http://localhost:8080",
+        timeout_seconds=1.0,
+        transport=httpx.MockTransport(handler),
+        api_key=None,
+    )
+
+    tx = CanonicalTransaction(
+        transaction_id="txn-header-absent",
+        intent_id="intent-header-absent",
+        cart_id="cart-header-absent",
+        agent_id="agent-header-absent",
+        user_id="user-header-absent",
+        merchant_id="merchant-header-absent",
+        merchant_name="Headerless Merchant",
+        amount=Decimal("125.00"),
+        currency="INR",
+        payment_method="SIMULATED_CARD",
+        idempotency_key="idem-header-absent",
+    )
+    decision = PolicyDecision(
+        decision=PolicyDecisionType.APPROVED,
+        reason_code="WITHIN_SPEND_LIMIT",
+        reason="Approved without header",
+    )
+
+    assert client.record_decision(tx, decision) == "0xdef"
+    assert "x-api-key" not in captured["headers"]
 
 
 def test_payment_flow_and_idempotency() -> None:
