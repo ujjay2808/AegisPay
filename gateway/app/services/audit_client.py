@@ -20,19 +20,23 @@ class AuditClient:
         audit_service_url: str,
         timeout_seconds: float,
         transport: Optional[httpx.BaseTransport] = None,
+        api_key: Optional[str] = None,
     ) -> None:
         self._audit_service_url = audit_service_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
         self._transport = transport
+        self._api_key = api_key if isinstance(api_key, str) and api_key else None
 
     def record_decision(self, transaction: CanonicalTransaction, decision: PolicyDecision) -> Optional[str]:
         started_at = time.perf_counter()
         try:
             payload = self._build_payload(transaction, decision)
+            headers = {"X-API-Key": self._api_key} if self._api_key else None
             with httpx.Client(timeout=self._timeout_seconds, transport=self._transport) as client:
                 response = client.post(
                     f"{self._audit_service_url}/api/decisions",
                     json=payload,
+                    headers=headers,
                 )
 
             elapsed_ms = (time.perf_counter() - started_at) * 1000

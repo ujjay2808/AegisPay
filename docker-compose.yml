@@ -51,6 +51,7 @@ services:
       AUDIT_ENABLED: ${AUDIT_ENABLED:-false}
       AUDIT_SERVICE_URL: http://backend-gateway:8080
       AUDIT_TIMEOUT_SECONDS: 30
+      AUDIT_API_KEY: ${AUDIT_API_KEY:-}
     command: >
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
 

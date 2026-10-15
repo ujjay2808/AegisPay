@@ -18,6 +18,7 @@ def get_mandate_flow(db: Session = Depends(get_db)) -> Generator[MandateFlowServ
         audit_client = AuditClient(
             audit_service_url=settings.audit_service_url,
             timeout_seconds=settings.audit_timeout_seconds,
+            api_key=settings.audit_api_key,
         )
 
     yield MandateFlowService(
