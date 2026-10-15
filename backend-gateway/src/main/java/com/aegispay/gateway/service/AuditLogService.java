@@ -1,6 +1,5 @@
 package com.aegispay.gateway.service;
 
-import java.io.IOException;
 import java.math.BigInteger;
 import java.util.List;
 import java.util.Optional;
@@ -12,6 +11,8 @@ import org.web3j.abi.datatypes.generated.Uint256;
 import org.web3j.protocol.core.DefaultBlockParameterName;
 import org.web3j.protocol.core.methods.request.Transaction;
 import org.web3j.protocol.core.methods.response.EthCall;
+import org.web3j.protocol.core.methods.response.EthGetTransactionReceipt;
+import org.web3j.protocol.core.methods.response.EthSendRawTransaction;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -20,10 +21,11 @@ import org.web3j.abi.datatypes.Function;
 import org.web3j.abi.datatypes.generated.Bytes32;
 import org.web3j.abi.datatypes.generated.Uint8;
 import org.web3j.crypto.Credentials;
+import org.web3j.crypto.RawTransaction;
+import org.web3j.crypto.TransactionEncoder;
 import org.web3j.protocol.Web3j;
-import org.web3j.protocol.core.methods.response.EthGetTransactionReceipt;
+import org.web3j.protocol.core.methods.response.EthGetTransactionCount;
 import org.web3j.protocol.core.methods.response.EthSendTransaction;
-import org.web3j.tx.RawTransactionManager;
 import org.web3j.utils.Numeric;
 
 import com.aegispay.gateway.exception.AegisPayBlockchainException;
@@ -41,49 +43,58 @@ public class AuditLogService {
         this.contractAddress = contractAddress;
     }
 
-    public String logDecision(String decisionHashHex, int decisionEnumValue) {
+    public synchronized String logDecision(String decisionHashHex, int decisionEnumValue) {
         try {
             if (!decisionHashHex.startsWith("0x") || Numeric.hexStringToByteArray(decisionHashHex).length != 32
                     || decisionEnumValue < 0 || decisionEnumValue > 2)
                 throw new IllegalArgumentException("Invalid decision payload");
-
             String data = FunctionEncoder.encode(
                     new Function("logDecision", List.of(new Bytes32(Numeric.hexStringToByteArray(decisionHashHex)),
                             new Uint8(BigInteger.valueOf(decisionEnumValue))), List.of()));
 
             BigInteger gasPrice = web3j.ethGasPrice().send().getGasPrice();
-            if (gasPrice == null || gasPrice.signum() <= 0) {
-                gasPrice = BigInteger.valueOf(30_000_000_000L);
+            gasPrice = gasPrice.multiply(BigInteger.valueOf(125)).divide(BigInteger.valueOf(100));
+
+            EthGetTransactionCount nonceResponse = web3j.ethGetTransactionCount(
+                    credentials.getAddress(), DefaultBlockParameterName.LATEST).send();
+            BigInteger nonce = nonceResponse.getTransactionCount();
+            // This is intentional: calls are serialized and we wait for the receipt, and it lets a new
+            // tx replace a stuck pending tx at the same nonce.
+
+            BigInteger gasLimit = BigInteger.valueOf(300000);
+            RawTransaction raw = RawTransaction.createTransaction(nonce, gasPrice, gasLimit, contractAddress,
+                    BigInteger.ZERO, data);
+
+            byte[] signed = TransactionEncoder.signMessage(raw, 80002L, credentials);
+            String hex = Numeric.toHexString(signed);
+            EthSendTransaction sendResult = web3j.ethSendRawTransaction(hex).send();
+            if (sendResult.hasError()) {
+                throw new IllegalStateException(sendResult.getError().getMessage());
             }
 
-            EthSendTransaction tx = new RawTransactionManager(web3j, credentials, 80002L).sendTransaction(
-                    gasPrice, BigInteger.valueOf(300000), contractAddress, data, BigInteger.ZERO, false);
-            if (tx.hasError()) {
-                throw new IllegalStateException(tx.getError().getMessage());
+            String txHash = sendResult.getTransactionHash();
+            long deadlineMillis = System.currentTimeMillis() + 20000L;
+            while (System.currentTimeMillis() < deadlineMillis) {
+                EthGetTransactionReceipt receipt = web3j.ethGetTransactionReceipt(txHash).send();
+                if (receipt != null && receipt.getTransactionReceipt().isPresent()) {
+                    String status = receipt.getTransactionReceipt().get().getStatus();
+                    if ("0x1".equals(status)) {
+                        return txHash;
+                    }
+                    throw new AegisPayBlockchainException("Audit transaction reverted: " + txHash,
+                            new IllegalStateException("Audit transaction reverted: " + txHash));
+                }
+                Thread.sleep(1000L);
             }
-
-            String txHash = tx.getTransactionHash();
-            waitForReceipt(txHash);
-            return txHash;
+            throw new AegisPayBlockchainException("Audit transaction not mined within 20s: " + txHash,
+                    new IllegalStateException("Audit transaction not mined within 20s: " + txHash));
+        } catch (AegisPayBlockchainException exception) {
+            throw exception;
         } catch (Exception exception) {
             System.err.println("BLOCKCHAIN CALL FAILED: " + exception);
             exception.printStackTrace();
             throw new AegisPayBlockchainException("Failed to log decision on-chain", exception);
         }
-    }
-
-    private void waitForReceipt(String txHash) throws InterruptedException, IOException {
-        for (int attempt = 0; attempt < 40; attempt++) {
-            EthGetTransactionReceipt receipt = web3j.ethGetTransactionReceipt(txHash).send();
-            if (receipt != null && receipt.getTransactionReceipt().isPresent()) {
-                if (!receipt.getTransactionReceipt().get().isStatusOK()) {
-                    throw new IllegalStateException("On-chain transaction reverted");
-                }
-                return;
-            }
-            Thread.sleep(1000L);
-        }
-        throw new IllegalStateException("Timed out waiting for transaction receipt");
     }
 
     public record AuditRecordView(String decisionHash, String decision, long timestamp, String submittedBy) {}
@@ -108,7 +119,6 @@ public class AuditLogService {
             }
             String value = call.getValue();
             if (value == null || value.equals("0x")) return Optional.empty();
-            @SuppressWarnings("rawtypes")
             List<Type> out = FunctionReturnDecoder.decode(value, function.getOutputParameters());
             if (out.size() != 4) return Optional.empty();
             String[] names = {"APPROVED", "DENIED", "ESCALATED"};
