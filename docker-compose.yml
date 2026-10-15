@@ -11,3 +11,48 @@ services:
       AEGISPAY_KEYSTORE_PATH: /root/.aegispay/keystores/UTC--2026-09-02T19-01-47.417917000Z--2bf7ebf70f30526db80abb2ec2d4c791c38e2481.json
     volumes:
       - ~/.aegispay/keystores:/root/.aegispay/keystores:ro
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend-gateway:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      SERVICE_NAME: aegispay-gateway
+      ENVIRONMENT: development
+      LOG_LEVEL: INFO
+      SPEND_CAP_AMOUNT: "5000.00"
+      SPEND_CAP_CURRENCY: INR
+      BLOCKED_MERCHANT_IDS: ${BLOCKED_MERCHANT_IDS:-}
+      AUDIT_ENABLED: ${AUDIT_ENABLED:-false}
+      AUDIT_SERVICE_URL: http://backend-gateway:8080
+      AUDIT_TIMEOUT_SECONDS: 30
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+volumes:
+  postgres_data:

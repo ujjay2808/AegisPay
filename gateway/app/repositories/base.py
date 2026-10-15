@@ -19,6 +19,7 @@ class StoredPayment(Protocol):
     transaction: CanonicalTransaction
     status: PaymentStatus
     decision: PolicyDecision
+    audit_tx_hash: str | None
 
 
 class GatewayRepository(Protocol):
@@ -42,7 +43,11 @@ class GatewayRepository(Protocol):
         transaction: CanonicalTransaction,
         status: PaymentStatus,
         decision: PolicyDecision,
+        audit_tx_hash: str | None = None,
     ) -> None:
+        ...
+
+    def update_payment_audit_tx_hash(self, payment_id: str, audit_tx_hash: str | None) -> None:
         ...
 
     def get_payment_by_idempotency_key(self, idempotency_key: str) -> StoredPayment | None:

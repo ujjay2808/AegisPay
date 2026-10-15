@@ -119,6 +119,7 @@ class SQLAlchemyGatewayRepository:
         transaction: CanonicalTransaction,
         status: PaymentStatus,
         decision: PolicyDecision,
+        audit_tx_hash: str | None = None,
     ) -> None:
         self._session.add(
             Payment(
@@ -137,8 +138,16 @@ class SQLAlchemyGatewayRepository:
                 decision=decision.decision.value,
                 reason_code=decision.reason_code,
                 reason=decision.reason,
+                audit_tx_hash=audit_tx_hash,
             )
         )
+        self._commit()
+
+    def update_payment_audit_tx_hash(self, payment_id: str, audit_tx_hash: str | None) -> None:
+        record = self._session.get(Payment, payment_id)
+        if record is None:
+            return
+        record.audit_tx_hash = audit_tx_hash
         self._commit()
 
     def get_payment_by_idempotency_key(self, idempotency_key: str) -> StoredPaymentRecord | None:
@@ -165,4 +174,9 @@ class SQLAlchemyGatewayRepository:
             reason_code=record.reason_code,
             reason=record.reason,
         )
-        return StoredPaymentRecord(transaction=transaction, status=PaymentStatus(record.status), decision=decision)
+        return StoredPaymentRecord(
+            transaction=transaction,
+            status=PaymentStatus(record.status),
+            decision=decision,
+            audit_tx_hash=record.audit_tx_hash,
+        )

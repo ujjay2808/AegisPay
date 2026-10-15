@@ -35,3 +35,4 @@ class PaymentCreateResponse(BaseModel):
     status: str = Field(min_length=1, max_length=32)
     reason_code: NonBlankText = Field(max_length=64)
     reason: NonBlankText = Field(max_length=500)
+    audit_tx_hash: str | None = Field(default=None, min_length=1, max_length=130)
